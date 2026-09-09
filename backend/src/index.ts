@@ -5,6 +5,7 @@ import cookieSession from "cookie-session";
 import { createBullBoard } from "@bull-board/api";
 import { BullMQAdapter } from "@bull-board/api/bullMQAdapter";
 import { ExpressAdapter } from "@bull-board/express";
+import "./workers/emailWorker";
 
 import { env } from "./config/env";
 import { emailQueue } from "./queues/emailQueue";
