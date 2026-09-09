@@ -22,11 +22,14 @@ export const env = {
   ),
 
   // Google OAuth
-  GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID ?? "",
-  GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET ?? "",
-  GOOGLE_CALLBACK_URL:
-    process.env.GOOGLE_CALLBACK_URL ?? "http://localhost:4000/api/auth/google/callback",
+  // GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID ?? "",
+  // GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET ?? "",
+  // GOOGLE_CALLBACK_URL:
+  //   process.env.GOOGLE_CALLBACK_URL ?? "http://localhost:4000/api/auth/google/callback",
 
+  GOOGLE_CLIENT_ID: required("GOOGLE_CLIENT_ID"),
+GOOGLE_CLIENT_SECRET: required("GOOGLE_CLIENT_SECRET"),
+GOOGLE_CALLBACK_URL: required("GOOGLE_CALLBACK_URL"),
   // Slack OAuth
   SLACK_CLIENT_ID: process.env.SLACK_CLIENT_ID ?? "",
   SLACK_CLIENT_SECRET: process.env.SLACK_CLIENT_SECRET ?? "",

@@ -1,7 +1,9 @@
+
 import { Router } from "express";
 import axios from "axios";
 import { prisma } from "../db/prisma";
 import { env } from "../config/env";
+import { signState, verifyState } from "../services/oauthState";
 
 export const slackRouter = Router();
 
@@ -18,15 +20,30 @@ slackRouter.get("/connect", (req, res) => {
     client_id: env.SLACK_CLIENT_ID,
     scope: "incoming-webhook",
     redirect_uri: env.SLACK_REDIRECT_URI,
-    state: userId, // carry the user id through the redirect
+    state: signState(userId),
   });
-  res.redirect(`https://slack.com/oauth/v2/authorize?${params.toString()}`);
+
+  res.redirect(
+    `https://slack.com/oauth/v2/authorize?${params.toString()}`
+  );
 });
 
 // GET /api/slack/callback - exchanges code for a webhook + team info
 slackRouter.get("/callback", async (req, res) => {
-  const { code, state } = req.query as { code?: string; state?: string };
-  if (!code || !state) return res.status(400).send("Missing code/state");
+  const { code, state } = req.query as {
+    code?: string;
+    state?: string;
+  };
+
+  if (!code || !state) {
+    return res.status(400).send("Missing code/state");
+  }
+
+  const userId = verifyState(state);
+
+  if (!userId) {
+    return res.status(400).send("Invalid or expired state");
+  }
 
   try {
     const { data } = await axios.post(
@@ -41,11 +58,13 @@ slackRouter.get("/callback", async (req, res) => {
 
     if (!data.ok) {
       console.error("Slack OAuth error:", data.error);
-      return res.redirect(`${env.FRONTEND_URL}/dashboard?slack=error`);
+      return res.redirect(
+        `${env.FRONTEND_URL}/dashboard?slack=error`
+      );
     }
 
     await prisma.slackIntegration.upsert({
-      where: { userId: state },
+      where: { userId },
       update: {
         teamId: data.team.id,
         accessToken: data.access_token,
@@ -53,7 +72,7 @@ slackRouter.get("/callback", async (req, res) => {
         channelId: data.incoming_webhook?.channel_id,
       },
       create: {
-        userId: state,
+        userId,
         teamId: data.team.id,
         accessToken: data.access_token,
         webhookUrl: data.incoming_webhook?.url,
@@ -61,27 +80,45 @@ slackRouter.get("/callback", async (req, res) => {
       },
     });
 
-    res.redirect(`${env.FRONTEND_URL}/dashboard?slack=connected`);
+    res.redirect(
+      `${env.FRONTEND_URL}/dashboard?slack=connected`
+    );
   } catch (err) {
     console.error("Slack callback failed:", err);
-    res.redirect(`${env.FRONTEND_URL}/dashboard?slack=error`);
+    res.redirect(
+      `${env.FRONTEND_URL}/dashboard?slack=error`
+    );
   }
 });
 
 // GET /api/slack/status
 slackRouter.get("/status", async (req, res) => {
   const userId = requireUserId(req);
-  if (!userId) return res.status(401).json({ error: "Login required" });
 
-  const integration = await prisma.slackIntegration.findUnique({ where: { userId } });
+  if (!userId) {
+    return res.status(401).json({ error: "Login required" });
+  }
+
+  const integration = await prisma.slackIntegration.findUnique({
+    where: { userId },
+  });
+
   res.json({ connected: !!integration });
 });
 
 // POST /api/slack/disconnect
 slackRouter.post("/disconnect", async (req, res) => {
   const userId = requireUserId(req);
-  if (!userId) return res.status(401).json({ error: "Login required" });
 
-  await prisma.slackIntegration.deleteMany({ where: { userId } });
+  if (!userId) {
+    return res.status(401).json({ error: "Login required" });
+  }
+
+  await prisma.slackIntegration.deleteMany({
+    where: { userId },
+  });
+
   res.json({ ok: true });
 });
+
+

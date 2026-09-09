@@ -1,16 +1,6 @@
 import { prisma } from "../db/prisma";
 import { emailQueue, enqueueEmailJob } from "./emailQueue";
 
-/**
- * Runs once when the API process boots.
- *
- * Problem it solves: BullMQ jobs live in Redis; EmailJob rows live in
- * Postgres. If Redis is wiped/restarted independently of Postgres (or the
- * process crashed between "insert row" and "enqueue job"), the two can
- * drift out of sync. This walks every row that should still be pending and
- * makes sure a matching BullMQ job exists - without ever re-sending
- * anything already SENT and without creating duplicates.
- */
 export async function recoverPendingJobs() {
   const pending = await prisma.emailJob.findMany({
     where: { status: { in: ["SCHEDULED", "RESCHEDULED"] } },
@@ -21,22 +11,10 @@ export async function recoverPendingJobs() {
   for (const row of pending) {
     const jobId = `email:${row.id}:v${row.version}`;
     const existing = await emailQueue.getJob(jobId);
+    if (existing) continue;
 
-    if (existing) {
-      // Already present in the queue (normal case after a plain restart)
-      // - BullMQ retains delayed jobs across a Redis restart as long as
-      // AOF persistence is on (see docker-compose: --appendonly yes).
-      continue;
-    }
-
-    // Missing from the queue - re-add it. If scheduledFor is in the past
-    // (e.g. server was down through the send time), it'll be picked up
-    // immediately with delay=0 rather than being lost.
     await enqueueEmailJob(row.id, row.scheduledFor, row.version);
-    await prisma.emailJob.update({
-      where: { id: row.id },
-      data: { bullJobId: jobId },
-    });
+    await prisma.emailJob.update({ where: { id: row.id }, data: { bullJobId: jobId } });
     recovered++;
   }
 
@@ -44,5 +22,36 @@ export async function recoverPendingJobs() {
     console.log(`Recovery: re-enqueued ${recovered} job(s) missing from the queue.`);
   } else {
     console.log("Recovery: queue already in sync with DB, nothing to do.");
+  }
+}
+
+const STALE_PROCESSING_MS = 5 * 60 * 1000;
+
+/**
+ * Catches rows stuck at PROCESSING because the worker process itself was
+ * killed (not just the job) — e.g. `kill -9`, OOM, container crash.
+ * Since there's no BullMQ job to redeliver in that case (the process that
+ * would've retried it is gone), we reset the row to SCHEDULED and
+ * re-enqueue with delay=0 so the *next* worker instance picks it up.
+ */
+export async function reclaimStuckProcessingJobs() {
+  const cutoff = new Date(Date.now() - STALE_PROCESSING_MS);
+
+  const stuck = await prisma.emailJob.findMany({
+    where: { status: "PROCESSING", updatedAt: { lt: cutoff } },
+  });
+
+  for (const row of stuck) {
+    const newVersion = row.version + 1;
+    await prisma.emailJob.update({
+      where: { id: row.id },
+      data: { status: "SCHEDULED", scheduledFor: new Date(), version: newVersion },
+    });
+    const job = await enqueueEmailJob(row.id, new Date(), newVersion);
+    await prisma.emailJob.update({ where: { id: row.id }, data: { bullJobId: job.id } });
+  }
+
+  if (stuck.length > 0) {
+    console.log(`Recovery: reclaimed ${stuck.length} stuck PROCESSING job(s).`);
   }
 }

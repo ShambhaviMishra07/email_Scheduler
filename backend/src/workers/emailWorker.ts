@@ -1,13 +1,26 @@
+
 import "dotenv/config";
 import { Worker, Job } from "bullmq";
 import { redisConnection } from "../config/redis";
 import { prisma } from "../db/prisma";
-import { EMAIL_QUEUE_NAME, EmailJobPayload, enqueueEmailJob } from "../queues/emailQueue";
-import { tryConsumeHourlySlot } from "../services/rateLimiter";
+import {
+  EMAIL_QUEUE_NAME,
+  EmailJobPayload,
+  enqueueEmailJob,
+} from "../queues/emailQueue";
+import {
+  tryConsumeHourlySlot,
+  claimNotificationSlot,
+  getCurrentHourCount,
+} from "../services/rateLimiter";
 import { sendEmail } from "../services/emailService";
 import { notifyRateLimitHit } from "../services/slackService";
 import { env } from "../config/env";
 import { indexEmail } from "../services/searchIndex";
+
+// If a row has been "PROCESSING" longer than this, we assume the worker
+// that claimed it crashed mid-send rather than being genuinely in flight.
+const STALE_PROCESSING_MS = 5 * 60 * 1000; // 5 minutes
 
 async function processEmailJob(job: Job<EmailJobPayload>) {
   const { emailJobId } = job.data;
@@ -18,34 +31,44 @@ async function processEmailJob(job: Job<EmailJobPayload>) {
   });
 
   if (!emailJob) {
-    // Nothing to do - row was deleted. Don't throw (would retry forever).
     console.warn(`EmailJob ${emailJobId} not found, skipping.`);
     return;
   }
 
   // --- Idempotency guard -------------------------------------------------
-  // If this row is already SENT (or currently PROCESSING by another
-  // worker/retry), don't send again. This is what makes restarts and
-  // BullMQ's at-least-once delivery safe.
   if (emailJob.status === "SENT") {
-    return;
-  }
-  if (emailJob.status === "PROCESSING") {
-    // Could be a duplicate delivery attempt (BullMQ retry). Bail out;
-    // the in-flight attempt owns this send.
-    return;
+    return; // already delivered, nothing to do
   }
 
-  // --- Rate limit check ----------------------------------------------------
-  const maxPerHour = emailJob.batch.hourlyLimit || env.DEFAULT_MAX_EMAILS_PER_HOUR;
-  const { allowed, retryAt } = await tryConsumeHourlySlot(emailJob.senderId, maxPerHour);
+  if (emailJob.status === "PROCESSING") {
+    const msSinceUpdate = Date.now() - emailJob.updatedAt.getTime();
+
+    if (msSinceUpdate < STALE_PROCESSING_MS) {
+      // Genuinely still in flight elsewhere — throw (not return!) so
+      // BullMQ retries with backoff instead of marking this attempt
+      // "completed" when nothing was actually sent.
+      throw new Error(
+        `EmailJob ${emailJob.id} already PROCESSING (${msSinceUpdate}ms ago) — retrying later`
+      );
+    }
+
+    // Stale: the previous attempt crashed mid-send. Fall through and
+    // reclaim it.
+    console.warn(`Reclaiming stale PROCESSING EmailJob ${emailJob.id}`);
+  }
+
+  // --- Rate limit check --------------------------------------------------
+  const maxPerHour =
+    emailJob.batch.hourlyLimit || env.DEFAULT_MAX_EMAILS_PER_HOUR;
+
+  const { allowed, retryAt } = await tryConsumeHourlySlot(
+    emailJob.senderId,
+    maxPerHour
+  );
 
   if (!allowed && retryAt) {
-    // Don't drop the job - push it to the next hour window and re-enqueue
-    // under a new (versioned) jobId, preserving relative order since jobs
-    // for the same sender all land at the same retryAt and BullMQ processes
-    // delayed jobs in the order their delay elapses.
     const newVersion = emailJob.version + 1;
+
     await prisma.emailJob.update({
       where: { id: emailJob.id },
       data: {
@@ -54,33 +77,57 @@ async function processEmailJob(job: Job<EmailJobPayload>) {
         version: newVersion,
       },
     });
-    const newJob = await enqueueEmailJob(emailJob.id, retryAt, newVersion);
+
+    const newJob = await enqueueEmailJob(
+      emailJob.id,
+      retryAt,
+      newVersion
+    );
+
     await prisma.emailJob.update({
       where: { id: emailJob.id },
       data: { bullJobId: newJob.id },
     });
 
-    await notifyRateLimitHit({
-      userId: emailJob.batch.userId,
-      senderEmail: emailJob.sender.fromEmail,
-      retryAt,
-      queuedCount: 1,
-    });
+    // Only the first job to hit the limit in this window actually pings Slack.
+    const shouldNotify = await claimNotificationSlot(emailJob.senderId);
+
+    if (shouldNotify) {
+      await notifyRateLimitHit({
+        userId: emailJob.batch.userId,
+        senderEmail: emailJob.sender.fromEmail,
+        retryAt,
+        queuedCount: await getCurrentHourCount(emailJob.senderId),
+      });
+    }
+
     return;
   }
 
-  // --- Mark as processing before the network call (idempotency guard) ------
-  await prisma.emailJob.update({
-    where: { id: emailJob.id },
-    data: { status: "PROCESSING" },
+  // --- Claim the row (idempotency guard) -------------------------------
+  // Uses updateMany + status filter so two workers racing on the same
+  // stale row can't both "win" the claim.
+  const claim = await prisma.emailJob.updateMany({
+    where: {
+      id: emailJob.id,
+      status: {
+        in: ["SCHEDULED", "RESCHEDULED", "PROCESSING"],
+      },
+    },
+    data: {
+      status: "PROCESSING",
+    },
   });
 
-  // --- Minimum delay between sends for this sender --------------------------
-  // BullMQ concurrency lets N jobs run in parallel; this per-job sleep
-  // throttles how fast any single sender's jobs actually hit SMTP,
-  // mimicking provider throttling as required.
+  if (claim.count === 0) {
+    // Someone else claimed it between our read and this write.
+    return;
+  }
+
   if (emailJob.sender.minDelayMs > 0) {
-    await new Promise((res) => setTimeout(res, emailJob.sender.minDelayMs));
+    await new Promise((res) =>
+      setTimeout(res, emailJob.sender.minDelayMs)
+    );
   }
 
   try {
@@ -92,19 +139,30 @@ async function processEmailJob(job: Job<EmailJobPayload>) {
     );
 
     const sentAt = new Date();
+
     await prisma.emailJob.update({
       where: { id: emailJob.id },
       data: {
         status: "SENT",
         sentAt,
-        lastError: previewUrl ? `preview: ${previewUrl}` : null,
+        lastError: previewUrl
+          ? `preview: ${previewUrl}`
+          : null,
       },
     });
 
-    await indexEmail({ ...emailJob, status: "SENT", sentAt });
-    console.log(`Sent ${emailJob.toEmail} (${messageId}) ${previewUrl ?? ""}`);
+    await indexEmail({
+      ...emailJob,
+      status: "SENT",
+      sentAt,
+    });
+
+    console.log(
+      `Sent ${emailJob.toEmail} (${messageId}) ${previewUrl ?? ""}`
+    );
   } catch (err) {
     const message = (err as Error).message;
+
     await prisma.emailJob.update({
       where: { id: emailJob.id },
       data: {
@@ -113,7 +171,8 @@ async function processEmailJob(job: Job<EmailJobPayload>) {
         attempts: { increment: 1 },
       },
     });
-    throw err; // let BullMQ's retry/backoff policy handle re-attempts
+
+    throw err;
   }
 }
 
@@ -126,14 +185,15 @@ export const emailWorker = new Worker<EmailJobPayload>(
   }
 );
 
-emailWorker.on("failed", (job, err) => {
-  console.error(`Job ${job?.id} failed:`, err.message);
-});
+emailWorker.on("failed", (job, err) =>
+  console.error(`Job ${job?.id} failed:`, err.message)
+);
 
-emailWorker.on("completed", (job) => {
-  console.log(`Job ${job.id} completed`);
-});
+emailWorker.on("completed", (job) =>
+  console.log(`Job ${job.id} completed`)
+);
 
 console.log(
-  `Email worker started (concurrency=${env.WORKER_CONCURRENCY}, minDelay/sender configurable, maxPerHour default=${env.DEFAULT_MAX_EMAILS_PER_HOUR})`
+  `Email worker started (concurrency=${env.WORKER_CONCURRENCY}, maxPerHour default=${env.DEFAULT_MAX_EMAILS_PER_HOUR})`
 );
+

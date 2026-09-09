@@ -8,9 +8,9 @@ import { ExpressAdapter } from "@bull-board/express";
 
 import { env } from "./config/env";
 import { emailQueue } from "./queues/emailQueue";
-import { recoverPendingJobs } from "./queues/recovery";
+import { recoverPendingJobs, reclaimStuckProcessingJobs } from "./queues/recovery";
 import { scheduleRouter } from "./routes/schedule";
-import { emailsRouter } from "./routes/emails";
+import { emailsRouter } from "./routes/email";
 import { sendersRouter } from "./routes/senders";
 import { authRouter } from "./routes/auth";
 import { slackRouter } from "./routes/slack";
@@ -27,16 +27,11 @@ app.use(
   })
 );
 
-// --- Live BullMQ dashboard (required: "expose a live BullMQ dashboard") ---
 const serverAdapter = new ExpressAdapter();
 serverAdapter.setBasePath("/admin/queues");
-createBullBoard({
-  queues: [new BullMQAdapter(emailQueue)],
-  serverAdapter,
-});
+createBullBoard({ queues: [new BullMQAdapter(emailQueue)], serverAdapter });
 app.use("/admin/queues", serverAdapter.getRouter());
 
-// --- API routes ---
 app.use("/api/schedule", scheduleRouter);
 app.use("/api/emails", emailsRouter);
 app.use("/api/senders", sendersRouter);
@@ -46,8 +41,8 @@ app.use("/api/slack", slackRouter);
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
 async function main() {
-  // Restart-safety: reconcile DB <-> Redis before accepting traffic.
   await recoverPendingJobs();
+  await reclaimStuckProcessingJobs();
 
   app.listen(env.PORT, () => {
     console.log(`API listening on http://localhost:${env.PORT}`);

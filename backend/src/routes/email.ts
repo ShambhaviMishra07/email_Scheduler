@@ -1,10 +1,15 @@
 import { Router } from "express";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../db/prisma";
 import { searchEmails } from "../services/searchIndex";
 
 export const emailsRouter = Router();
 
-// GET /api/emails/scheduled
+const withSender = Prisma.validator<Prisma.EmailJobDefaultArgs>()({
+  include: { sender: true },
+});
+type EmailJobWithSender = Prisma.EmailJobGetPayload<typeof withSender>;
+
 emailsRouter.get("/scheduled", async (_req, res) => {
   const rows = await prisma.emailJob.findMany({
     where: { status: { in: ["SCHEDULED", "RESCHEDULED", "PROCESSING"] } },
@@ -12,7 +17,7 @@ emailsRouter.get("/scheduled", async (_req, res) => {
     include: { sender: true },
   });
   res.json(
-    rows.map((r) => ({
+    rows.map((r: EmailJobWithSender) => ({
       id: r.id,
       email: r.toEmail,
       subject: r.subject,
@@ -22,7 +27,6 @@ emailsRouter.get("/scheduled", async (_req, res) => {
   );
 });
 
-// GET /api/emails/sent
 emailsRouter.get("/sent", async (_req, res) => {
   const rows = await prisma.emailJob.findMany({
     where: { status: { in: ["SENT", "FAILED"] } },
@@ -30,7 +34,7 @@ emailsRouter.get("/sent", async (_req, res) => {
     include: { sender: true },
   });
   res.json(
-    rows.map((r) => ({
+    rows.map((r: EmailJobWithSender) => ({
       id: r.id,
       email: r.toEmail,
       subject: r.subject,
@@ -40,7 +44,6 @@ emailsRouter.get("/sent", async (_req, res) => {
   );
 });
 
-// GET /api/emails/search?q=...  (Elasticsearch)
 emailsRouter.get("/search", async (req, res) => {
   const q = (req.query.q as string) ?? "";
   if (!q) return res.json([]);

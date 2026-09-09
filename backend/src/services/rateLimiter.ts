@@ -1,19 +1,5 @@
 import { redisConnection } from "../config/redis";
 
-/**
- * Fixed-hour-window counter, keyed by sender + calendar hour (UTC).
- * e.g. ratelimit:<senderId>:2026-09-07T14
- *
- * Why fixed window (not sliding/leaky bucket)?
- *  - Simple to reason about and to explain "next available hour window" resets.
- *  - Good enough given the requirement is "N emails per hour", not strict
- *    smoothing. Documented as a trade-off in the README.
- *
- * Atomicity: we use a single Lua script (via a MULTI/EVAL) so INCR + EXPIRE
- * + the limit check happen as one atomic unit, which stays correct even
- * with many worker processes / instances hitting Redis concurrently.
- */
-
 const LUA_INCR_AND_CHECK = `
 local current = redis.call("INCR", KEYS[1])
 if tonumber(current) == 1 then
@@ -28,8 +14,8 @@ return 1
 `;
 
 function hourBucketKey(senderId: string, date: Date): string {
-  const iso = date.toISOString(); // 2026-09-07T14:32:10.000Z
-  const hour = iso.slice(0, 13); // 2026-09-07T14
+  const iso = date.toISOString();
+  const hour = iso.slice(0, 13);
   return `ratelimit:${senderId}:${hour}`;
 }
 
@@ -40,11 +26,6 @@ export function nextHourBoundary(date: Date): Date {
   return next;
 }
 
-/**
- * Attempts to consume one slot from the sender's hourly budget.
- * Returns { allowed: true } if the send should proceed now, or
- * { allowed: false, retryAt } with the next hour boundary to try again.
- */
 export async function tryConsumeHourlySlot(
   senderId: string,
   maxPerHour: number,
@@ -56,12 +37,9 @@ export async function tryConsumeHourlySlot(
     1,
     key,
     maxPerHour.toString(),
-    "3700" // TTL slightly over an hour so the key self-cleans
+    "3700"
   );
-
-  if (result === 1) {
-    return { allowed: true };
-  }
+  if (result === 1) return { allowed: true };
   return { allowed: false, retryAt: nextHourBoundary(now) };
 }
 
@@ -69,4 +47,20 @@ export async function getCurrentHourCount(senderId: string, now: Date = new Date
   const key = hourBucketKey(senderId, now);
   const val = await redisConnection.get(key);
   return val ? parseInt(val, 10) : 0;
+}
+
+/**
+ * Phase 3 addition: ensures only the first job that hits the limit in a
+ * given hour window triggers a Slack notification (SET NX = atomic
+ * "set if not exists", safe across many concurrent workers).
+ */
+export async function claimNotificationSlot(
+  senderId: string,
+  now: Date = new Date()
+): Promise<boolean> {
+  const iso = now.toISOString();
+  const hour = iso.slice(0, 13);
+  const key = `ratelimit-notified:${senderId}:${hour}`;
+  const result = await redisConnection.set(key, "1", "EX", 3700, "NX");
+  return result === "OK";
 }
