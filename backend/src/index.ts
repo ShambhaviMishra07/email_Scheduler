@@ -25,6 +25,8 @@ app.use(
     name: "session",
     secret: env.SESSION_SECRET,
     maxAge: 7 * 24 * 60 * 60 * 1000,
+    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+    secure: process.env.NODE_ENV === "production",
   })
 );
 
@@ -42,8 +44,16 @@ app.use("/api/slack", slackRouter);
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
 async function main() {
-  await recoverPendingJobs();
-  await reclaimStuckProcessingJobs();
+  // await recoverPendingJobs();
+  // await reclaimStuckProcessingJobs();
+
+
+  console.log("Starting recovery...");
+await recoverPendingJobs();
+console.log("Pending jobs recovered");
+
+await reclaimStuckProcessingJobs();
+console.log("Stuck jobs reclaimed");
 
   app.listen(env.PORT, () => {
     console.log(`API listening on http://localhost:${env.PORT}`);

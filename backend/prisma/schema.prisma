@@ -7,82 +7,66 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum EmailStatus {
-  SCHEDULED   // stored + BullMQ delayed job created, waiting for its time
-  PROCESSING  // worker has picked it up and is sending
-  SENT        // delivered successfully via SMTP
-  FAILED      // permanently failed (after retries exhausted)
-  RESCHEDULED // was delayed further due to hourly rate limit
-}
-
 model User {
-  id        String   @id @default(uuid())
-  googleId  String   @unique
-  email     String   @unique
-  name      String
-  avatarUrl String?
-  createdAt DateTime @default(now())
-
+  id               String            @id @default(uuid())
+  googleId         String            @unique
+  email            String            @unique
+  name             String
+  avatarUrl        String?
+  createdAt        DateTime          @default(now())
+  batches          EmailBatch[]
   senders          Sender[]
   slackIntegration SlackIntegration?
-  batches          EmailBatch[]
 }
 
 model Sender {
-  id           String   @id @default(uuid())
-  userId       String
-  user         User     @relation(fields: [userId], references: [id])
-  fromEmail    String
-  smtpHost     String
-  smtpPort     Int
-  smtpUser     String
-  smtpPass     String
-  maxPerHour   Int      @default(200)
-  minDelayMs   Int      @default(2000)
-  createdAt    DateTime @default(now())
-
-  emails EmailJob[]
+  id         String     @id @default(uuid())
+  userId     String
+  fromEmail  String
+  smtpHost   String
+  smtpPort   Int
+  smtpUser   String
+  smtpPass   String
+  maxPerHour Int        @default(200)
+  minDelayMs Int        @default(2000)
+  createdAt  DateTime   @default(now())
+  emails     EmailJob[]
+  user       User       @relation(fields: [userId], references: [id])
 
   @@index([userId])
 }
 
 model EmailBatch {
-  id           String   @id @default(uuid())
-  userId       String
-  user         User     @relation(fields: [userId], references: [id])
-  subject      String
-  body         String   @db.Text
-  startTime    DateTime
-  delayMs      Int
-  hourlyLimit  Int
-  createdAt    DateTime @default(now())
-
-  emails EmailJob[]
+  id          String     @id @default(uuid())
+  userId      String
+  subject     String
+  body        String
+  startTime   DateTime
+  delayMs     Int
+  hourlyLimit Int
+  createdAt   DateTime   @default(now())
+  user        User       @relation(fields: [userId], references: [id])
+  emails      EmailJob[]
 }
 
 model EmailJob {
   id           String      @id @default(uuid())
   batchId      String
-  batch        EmailBatch  @relation(fields: [batchId], references: [id])
   senderId     String
-  sender       Sender      @relation(fields: [senderId], references: [id])
-
   toEmail      String
   subject      String
-  body         String      @db.Text
-
+  body         String
   scheduledFor DateTime
   status       EmailStatus @default(SCHEDULED)
-
   bullJobId    String?     @unique
   version      Int         @default(1)
-
   attempts     Int         @default(0)
   lastError    String?
   sentAt       DateTime?
-
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
+  batch        EmailBatch  @relation(fields: [batchId], references: [id])
+  sender       Sender      @relation(fields: [senderId], references: [id])
 
   @@index([senderId, status])
   @@index([scheduledFor])
@@ -91,10 +75,18 @@ model EmailJob {
 model SlackIntegration {
   id          String   @id @default(uuid())
   userId      String   @unique
-  user        User     @relation(fields: [userId], references: [id])
   teamId      String
   accessToken String
   webhookUrl  String?
   channelId   String?
   createdAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id])
+}
+
+enum EmailStatus {
+  SCHEDULED
+  PROCESSING
+  SENT
+  FAILED
+  RESCHEDULED
 }

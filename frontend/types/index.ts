@@ -27,3 +27,16 @@ export interface Sender {
   maxPerHour: number;
   minDelayMs: number;
 }
+
+// NEW: Full email detail type
+export interface EmailDetail {
+  id: string;
+  email: string;
+  subject: string;
+  body: string;
+  status: string;
+  scheduledTime: string;
+  sentTime: string | null;
+  lastError: string | null;
+  fromEmail: string;
+}

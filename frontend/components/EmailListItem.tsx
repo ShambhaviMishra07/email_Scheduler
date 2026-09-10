@@ -6,14 +6,23 @@ export function EmailListItem({
   subject,
   time,
   status,
+  active,
+  onClick,
 }: {
   to: string;
   subject: string;
   time: string | null;
   status: string;
+  active?: boolean;
+  onClick?: () => void;
 }) {
   return (
-    <div className="flex items-start justify-between px-4 py-3 border-b border-panelBorder hover:bg-white/5 cursor-pointer">
+    <div
+      onClick={onClick}
+      className={`flex items-start justify-between px-4 py-3 border-b border-panelBorder cursor-pointer ${
+        active ? "bg-white/10" : "hover:bg-white/5"
+      }`}
+    >
       <div className="min-w-0">
         <div className="text-sm text-gray-200 truncate">To: {to}</div>
         <div className="text-sm text-gray-400 truncate">{subject}</div>

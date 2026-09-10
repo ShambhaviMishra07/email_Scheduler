@@ -3,12 +3,19 @@
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
-import type { User, ScheduledEmail, SentEmail, Sender } from "@/types";
+import type {
+  User,
+  ScheduledEmail,
+  SentEmail,
+  Sender,
+  EmailDetail,
+} from "@/types";
 import { Header } from "@/components/Header";
 import { EmailListItem } from "@/components/EmailListItem";
 import { EmptyState } from "@/components/EmptyState";
 import { Spinner } from "@/components/Spinner";
 import { ComposeModal } from "@/components/ComposeModal";
+import { EmailPreview } from "@/components/EmailPreview";
 
 type Tab = "scheduled" | "sent";
 
@@ -21,6 +28,11 @@ export default function DashboardPage() {
   const [sent, setSent] = useState<SentEmail[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [showCompose, setShowCompose] = useState(false);
+
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedDetail, setSelectedDetail] = useState<EmailDetail | null>(
+    null
+  );
 
   const loadLists = useCallback(async () => {
     const [s, se] = await Promise.all([api.getScheduled(), api.getSent()]);
@@ -63,6 +75,12 @@ export default function DashboardPage() {
     router.push("/login");
   }
 
+  async function handleSelect(id: string) {
+    setSelectedId(id);
+    const detail = await api.getEmailDetail(id);
+    setSelectedDetail(detail);
+  }
+
   if (loading || !user) return <Spinner />;
 
   const list = tab === "scheduled" ? scheduled : sent;
@@ -103,7 +121,9 @@ export default function DashboardPage() {
               <Spinner />
             ) : list.length === 0 ? (
               <div className="text-gray-500 text-sm text-center mt-10">
-                {tab === "scheduled" ? "No scheduled emails yet." : "No sent emails yet."}
+                {tab === "scheduled"
+                  ? "No scheduled emails yet."
+                  : "No sent emails yet."}
               </div>
             ) : (
               list.map((item) =>
@@ -114,6 +134,8 @@ export default function DashboardPage() {
                     subject={item.subject}
                     time={(item as ScheduledEmail).scheduledTime}
                     status={item.status}
+                    active={item.id === selectedId}
+                    onClick={() => handleSelect(item.id)}
                   />
                 ) : (
                   <EmailListItem
@@ -122,6 +144,8 @@ export default function DashboardPage() {
                     subject={item.subject}
                     time={(item as SentEmail).sentTime}
                     status={item.status}
+                    active={item.id === selectedId}
+                    onClick={() => handleSelect(item.id)}
                   />
                 )
               )
@@ -130,14 +154,22 @@ export default function DashboardPage() {
         </div>
 
         {/* Main pane */}
-        <div className="flex-1 bg-gray-50 flex items-center justify-center">
-          {list && list.length === 0 ? (
+        <div className="flex-1 bg-gray-50 flex items-center justify-center p-8 overflow-y-auto">
+          {selectedDetail ? (
+            <EmailPreview detail={selectedDetail} />
+          ) : list && list.length === 0 ? (
             <EmptyState
-              title={tab === "scheduled" ? "Nothing scheduled" : "Nothing sent yet"}
+              title={
+                tab === "scheduled"
+                  ? "Nothing scheduled"
+                  : "Nothing sent yet"
+              }
               subtitle="Compose a new email to get started."
             />
           ) : (
-            <div className="text-gray-400 text-sm">Select an email to preview it here.</div>
+            <div className="text-gray-400 text-sm">
+              Select an email to preview it here.
+            </div>
           )}
         </div>
       </div>
@@ -168,7 +200,9 @@ function TabButton({
     <button
       onClick={onClick}
       className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm ${
-        active ? "bg-white/10 text-white" : "text-gray-400 hover:text-gray-200"
+        active
+          ? "bg-white/10 text-white"
+          : "text-gray-400 hover:text-gray-200"
       }`}
     >
       <span>{label}</span>
