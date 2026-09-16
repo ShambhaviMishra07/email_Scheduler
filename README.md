@@ -2,7 +2,7 @@
 
 **Live demo:** https://email-scheduler-murex.vercel.app/
 **Backend API:** https://email-scheduler-6mwu.onrender.com
-**Bull Board (live queue dashboard):** https://your-backend.onrender.com/admin/queues
+
 
 ## How to run the backend (Express, Redis, DB, BullMQ worker)
 
