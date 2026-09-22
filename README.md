@@ -41,9 +41,6 @@ npm run dev
 ```
 Visit `http://localhost:3000` — redirects to `/login`.
 
-## Setting up Ethereal Email
-No manual setup needed. The first time a user logs in, a `Sender` row is auto-created via `POST /api/senders`, which calls `nodemailer.createTestAccount()` to provision a fresh Ethereal inbox on the fly. Its SMTP host/port/credentials are stored on that `Sender` row and used automatically for every send — nothing to configure by hand.
-
 ## Setting up Google OAuth
 1. [console.cloud.google.com](https://console.cloud.google.com) → new project → **APIs & Services → OAuth consent screen** → User type: External → fill basic info → add your own email under **Test users** (required while the app is in Testing mode).
 2. **APIs & Services → Credentials → Create Credentials → OAuth client ID**.
